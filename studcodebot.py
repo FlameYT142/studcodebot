@@ -1,8 +1,7 @@
 import os
 import asyncio
 import logging
-import aiohttp
-from typing import Dict, Set
+import json
 from datetime import datetime
 import pytz
 
@@ -11,55 +10,59 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
 
 # ------------------ КОНФИГУРАЦИЯ ------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-KEY_ID = os.getenv("KEY_ID")
-SECRET = os.getenv("SECRET")
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "-1004386994995"))
+ADMIN_CHAT_ID = 1302410770  # ВАШ ID
 
-# Настройки Cloud.ru
-BASE_URL = "https://foundation-models.api.cloud.ru/v1"
-MODEL_NAME = "deepseek-ai/DeepSeek-V4-Pro"
-
-# Временная зона Братска (UTC+8)
 BRATSK_TZ = pytz.timezone('Asia/Irkutsk')
+ORDERS_FILE = "orders.json"
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Проверка наличия токенов
 if not BOT_TOKEN:
-    logging.error("BOT_TOKEN не найден в переменных окружения!")
-    exit(1)
-if not KEY_ID or not SECRET:
-    logging.error("KEY_ID или SECRET не найдены в переменных окружения!")
+    logging.error("BOT_TOKEN не найден!")
     exit(1)
 
-# Инициализация бота
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# ------------------ СОСТОЯНИЯ ДЛЯ FSM ------------------
+# ------------------ РАБОТА С ФАЙЛОМ ------------------
+def load_orders():
+    """Загружает заказы из JSON-файла"""
+    if os.path.exists(ORDERS_FILE):
+        try:
+            with open(ORDERS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            logging.warning("Файл orders.json повреждён, создаём новый")
+            return {}
+    return {}
+
+def save_orders():
+    """Сохраняет заказы в JSON-файл"""
+    try:
+        with open(ORDERS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(orders, f, ensure_ascii=False, indent=2)
+    except IOError as e:
+        logging.error(f"Ошибка сохранения заказов: {e}")
+
+# Загружаем заказы при старте
+orders = load_orders()
+logging.info(f"Загружено {len(orders)} заказов")
+
+# ------------------ СОСТОЯНИЯ ------------------
 class OrderStates(StatesGroup):
     description = State()
-    budget = State()
-    deadline = State()
-
-class AIState(StatesGroup):
-    chat = State()
-
-# ------------------ ХРАНИЛИЩА ------------------
-user_histories: Dict[int, list] = {}
-waiting_for_reply: Dict[int, int] = {}
+    payment = State()
+    priority = State()
 
 # ------------------ КЛАВИАТУРЫ ------------------
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🤖 Заказать бота", callback_data="new_order"),
-            InlineKeyboardButton(text="🧠 ИИ-консультант", callback_data="ai_chat")
+            InlineKeyboardButton(text="🤖 Заказать бота", callback_data="new_order")
         ],
         [
             InlineKeyboardButton(text="📊 Мои заказы", callback_data="my_orders"),
@@ -67,48 +70,24 @@ def main_menu():
         ]
     ])
 
-def order_admin_keyboard(user_id: int, username: str = None):
-    data = f"{user_id}"
-    if username:
-        data += f"|{username}"
+def payment_methods():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="💬 Связаться", callback_data=f"contact|{data}"),
-            InlineKeyboardButton(text="📦 В архив", callback_data=f"archive|{data}")
-        ],
-        [
-            InlineKeyboardButton(text="❌ Отказать", callback_data=f"reject_order|{data}")
+            InlineKeyboardButton(text="⭐ 200 Stars", callback_data="pay_stars"),
+            InlineKeyboardButton(text="💳 На карту", callback_data="pay_card")
         ]
     ])
 
-# ------------------ ФУНКЦИЯ ЗАПРОСА К CLOUD.RU ------------------
-async def ask_deepseek(messages: list) -> str:
-    """Отправляет запрос к DeepSeek-V4-Pro через Cloud.ru API"""
-    url = f"{BASE_URL}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {SECRET}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": MODEL_NAME,
-        "messages": messages,
-        "max_tokens": 2500,
-        "temperature": 0.5,
-        "presence_penalty": 0,
-        "top_p": 0.95
-    }
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload, headers=headers) as response:
-            if response.status != 200:
-                error_text = await response.text()
-                logging.error(f"Ошибка Cloud.ru API: {response.status} - {error_text}")
-                raise Exception(f"API ошибка: {response.status}")
-            
-            result = await response.json()
-            return result["choices"][0]["message"]["content"]
+def priority_buttons():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🟢 Не срочно", callback_data="priority_low"),
+            InlineKeyboardButton(text="🟡 Норм", callback_data="priority_mid"),
+            InlineKeyboardButton(text="🔴 Срочно", callback_data="priority_high")
+        ]
+    ])
 
-# ------------------ КОМАНДА /START ------------------
+# ------------------ /START ------------------
 @dp.message(Command("start"))
 async def start_cmd(message: Message, state: FSMContext):
     await state.clear()
@@ -118,25 +97,23 @@ async def start_cmd(message: Message, state: FSMContext):
     
     await message.answer(
         f"👋 **Привет!** (по Братску сейчас {time_str})\n\n"
-        "Я — бот проекта **\"УГОЛОК СТУДЕНТА\"**\n\n"
-        "Я помогаю:\n"
-        "🤖 **Заказывать ботов на заказ**\n"
-        "🧠 **Консультироваться с ИИ** по разработке\n\n"
-        "Выбери действие ниже 👇",
+        "Я — бот **\"УГОЛОК СТУДЕНТА\"**\n\n"
+        "Помогаю заказать разработку Telegram-бота.\n\n"
+        "👇 Нажми кнопку, чтобы оставить заявку",
         parse_mode="Markdown",
         reply_markup=main_menu()
     )
 
-# ------------------ ЗАКАЗ БОТА (FSM) ------------------
+# ------------------ ШАГ 1: ОПИСАНИЕ ------------------
 @dp.callback_query(F.data == "new_order")
 async def new_order(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "📝 **Расскажите, что нужно сделать:**\n\n"
-        "Опишите функционал будущего бота максимально подробно:\n"
-        "- Для чего нужен бот?\n"
+        "📝 **Шаг 1 из 3: Опишите задачу**\n\n"
+        "Что должен уметь ваш будущий бот?\n"
+        "- Для чего он нужен?\n"
         "- Какие функции должны быть?\n"
         "- Есть ли примеры похожих ботов?\n\n"
-        "Напишите всё одним сообщением 👇",
+        "Напишите всё подробно 👇",
         parse_mode="Markdown"
     )
     await state.set_state(OrderStates.description)
@@ -145,208 +122,249 @@ async def new_order(callback: CallbackQuery, state: FSMContext):
 @dp.message(OrderStates.description)
 async def get_description(message: Message, state: FSMContext):
     await state.update_data(description=message.text)
+    
     await message.answer(
-        "💰 **Какой бюджет?**\n\n"
-        "Напишите сумму или диапазон (например: 15 000–20 000 ₽)",
-        parse_mode="Markdown"
+        "💳 **Шаг 2 из 3: Выберите способ оплаты**\n\n"
+        "⭐ **200 Stars** — оплата внутри Telegram (мгновенно)\n"
+        "💳 **На карту** — я пришлю реквизиты в личку\n\n"
+        "*Если выберете 'На карту', я напишу вам сам*",
+        parse_mode="Markdown",
+        reply_markup=payment_methods()
     )
-    await state.set_state(OrderStates.budget)
+    await state.set_state(OrderStates.payment)
 
-@dp.message(OrderStates.budget)
-async def get_budget(message: Message, state: FSMContext):
-    await state.update_data(budget=message.text)
-    await message.answer(
-        "⏰ **Какие сроки?**\n\n"
-        "Когда нужен готовый бот? (например: через 2 недели)",
-        parse_mode="Markdown"
+# ------------------ ШАГ 2: ОПЛАТА ------------------
+@dp.callback_query(OrderStates.payment, F.data == "pay_stars")
+async def pay_stars(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(payment="stars")
+    
+    await callback.message.edit_text(
+        "⏰ **Шаг 3 из 3: Выберите срочность**\n\n"
+        "🟢 **Не срочно** — сделаем в свободное время\n"
+        "🟡 **Норм** — средний приоритет\n"
+        "🔴 **Срочно** — сделаем в первую очередь\n\n"
+        "Выберите вариант 👇",
+        parse_mode="Markdown",
+        reply_markup=priority_buttons()
     )
-    await state.set_state(OrderStates.deadline)
+    await state.set_state(OrderStates.priority)
+    await callback.answer()
 
-@dp.message(OrderStates.deadline)
-async def get_deadline(message: Message, state: FSMContext):
-    await state.update_data(deadline=message.text)
+@dp.callback_query(OrderStates.payment, F.data == "pay_card")
+async def pay_card(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(payment="card")
+    
+    await callback.message.edit_text(
+        "⏰ **Шаг 3 из 3: Выберите срочность**\n\n"
+        "🟢 **Не срочно** — сделаем в свободное время\n"
+        "🟡 **Норм** — средний приоритет\n"
+        "🔴 **Срочно** — сделаем в первую очередь\n\n"
+        "Выберите вариант 👇",
+        parse_mode="Markdown",
+        reply_markup=priority_buttons()
+    )
+    await state.set_state(OrderStates.priority)
+    await callback.answer()
+
+# ------------------ ШАГ 3: СРОЧНОСТЬ ------------------
+priority_names = {
+    "priority_low": "🟢 Не срочно",
+    "priority_mid": "🟡 Норм",
+    "priority_high": "🔴 Срочно"
+}
+
+@dp.callback_query(OrderStates.priority, F.data.startswith("priority_"))
+async def get_priority(callback: CallbackQuery, state: FSMContext):
+    priority = callback.data
+    priority_text = priority_names.get(priority, "❓ Неизвестно")
+    
     data = await state.get_data()
+    data["priority"] = priority_text
     
-    now_bratsk = datetime.now(BRATSK_TZ)
-    time_str = now_bratsk.strftime("%d.%m.%Y %H:%M")
+    # Генерируем ID заказа
+    order_id = f"ORDER_{callback.from_user.id}_{int(datetime.now().timestamp())}"
     
-    username = f"@{message.from_user.username}" if message.from_user.username else "без юзернейма"
+    # Определяем способ оплаты
+    payment_type = data.get("payment", "—")
+    if payment_type == "stars":
+        payment_text = "⭐ 200 Stars"
+        status_text = "⏳ Ожидает оплаты Stars"
+        total_sum = "200 Stars"
+    else:
+        payment_text = "💳 На карту"
+        status_text = "⏳ Ждёт реквизиты"
+        total_sum = "— (будет указана позже)"
+    
+    # Сохраняем заказ
+    order_data = {
+        "user_id": callback.from_user.id,
+        "username": callback.from_user.username,
+        "description": data.get("description", "—"),
+        "payment_type": payment_type,
+        "payment_text": payment_text,
+        "priority": priority_text,
+        "status": "new",
+        "paid": False,
+        "total_sum": total_sum,
+        "created_at": datetime.now(BRATSK_TZ).strftime("%d.%m.%Y %H:%M")
+    }
+    orders[order_id] = order_data
+    save_orders()  # 💾 СОХРАНЯЕМ В ФАЙЛ
+    
+    # ---------- ОТПРАВКА ЗАКАЗА АДМИНУ (ВАМ) ----------
+    username = f"@{callback.from_user.username}" if callback.from_user.username else "без юзернейма"
+    
     admin_msg = (
-        f"🤖 **НОВЫЙ ЗАКАЗ**\n\n"
-        f"📝 **Описание:**\n{data['description']}\n\n"
-        f"💰 **Бюджет:** {data['budget']}\n"
-        f"⏰ **Сроки:** {data['deadline']}\n\n"
-        f"👤 **Клиент:** {username}\n"
-        f"🆔 **ID:** `{message.from_user.id}`\n"
-        f"🕐 **Время (Братск):** {time_str}"
+        f"📦 **ПРИШЁЛ НОВЫЙ ЗАКАЗ!**\n\n"
+        f"📝 **Описание ТЗ:**\n{data.get('description', '—')}\n\n"
+        f"💰 **Оплата:** {payment_text}\n"
+        f"⏰ **Приоритетность:** {priority_text}\n\n"
+        f"👤 **Заказчик:** {username}\n"
+        f"🆔 **ID:** `{callback.from_user.id}`\n"
+        f"🕐 **Время заказа:** {order_data['created_at']}\n\n"
+        f"💳 **Статус оплаты:** {status_text}"
     )
+    
     await bot.send_message(
         chat_id=ADMIN_CHAT_ID,
         text=admin_msg,
-        reply_markup=order_admin_keyboard(message.from_user.id, message.from_user.username),
         parse_mode="Markdown"
     )
     
-    await message.answer(
-        "✅ **Заказ принят!**\n\n"
-        "Мы свяжемся с вами в ближайшее время.\n"
-        "А пока можете задать вопросы ИИ-консультанту.",
-        parse_mode="Markdown"
-    )
+    # Если выбрана оплата Stars → отправляем счёт
+    if data.get("payment") == "stars":
+        await callback.message.edit_text(
+            f"✅ **Заказ принят!**\n\n"
+            f"🆔 **Заказ:** `{order_id}`\n"
+            f"⏰ **Срочность:** {priority_text}\n\n"
+            "💳 **Внесите предоплату 200 Stars**\n\n"
+            "Нажмите кнопку ниже, чтобы оплатить 👇",
+            parse_mode="Markdown"
+        )
+        
+        await bot.send_invoice(
+            chat_id=callback.from_user.id,
+            title="Предоплата за разработку бота",
+            description=f"Заказ #{order_id}\nСрочность: {priority_text}",
+            payload=f"payment_{order_id}",
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice(label="Предоплата", amount=200)],
+            need_name=True,
+            need_phone_number=True,
+            start_parameter="pay",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⭐ Оплатить 200 Stars", pay=True)]
+            ])
+        )
+    else:
+        await callback.message.edit_text(
+            f"✅ **Заказ принят!**\n\n"
+            f"🆔 **Заказ:** `{order_id}`\n"
+            f"⏰ **Срочность:** {priority_text}\n\n"
+            "💳 **Способ оплаты:** На карту\n\n"
+            "Я напишу вам в ближайшее время с реквизитами.\n\n"
+            "*Проверьте, что у вас открыты личные сообщения.*",
+            parse_mode="Markdown"
+        )
+    
     await state.clear()
-
-# ------------------ ИИ-КОНСУЛЬТАНТ ------------------
-@dp.callback_query(F.data == "ai_chat")
-async def ai_chat_start(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    
-    user_id = callback.from_user.id
-    
-    if user_id not in user_histories:
-        user_histories[user_id] = [
-            {
-                "role": "system",
-                "content": (
-                    "Ты — ИИ-консультант в проекте 'УГОЛОК СТУДЕНТА'. "
-                    "Твоя задача — помогать клиентам сформулировать техническое задание на разработку ботов. "
-                    "Отвечай на русском языке, дружелюбно, структурированно и по делу."
-                )
-            }
-        ]
-    
-    await state.set_state(AIState.chat)
-    
-    await callback.message.edit_text(
-        "🧠 **ИИ-консультант по разработке ботов**\n\n"
-        "Задайте вопрос или опишите, что хотите автоматизировать.\n"
-        "Я помогу уточнить требования и подготовить ТЗ.\n\n"
-        "📌 Напишите /clear чтобы начать новый диалог.",
-        parse_mode="Markdown"
-    )
     await callback.answer()
 
-@dp.message(AIState.chat)
-async def ai_chat_handler(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    user_message = message.text
+# ------------------ ОБРАБОТКА ПЛАТЕЖЕЙ STARS ------------------
+@dp.pre_checkout_query()
+async def pre_checkout_query(query: types.PreCheckoutQuery):
+    await query.answer(ok=True)
+
+@dp.message(F.successful_payment)
+async def successful_payment(message: Message):
+    payment_info = message.successful_payment
+    order_id = payment_info.invoice_payload.replace("payment_", "")
     
-    # Очистка истории
-    if user_message.lower() == "/clear":
-        user_histories[user_id] = [
-            {
-                "role": "system",
-                "content": (
-                    "Ты — ИИ-консультант в проекте 'УГОЛОК СТУДЕНТА'. "
-                    "Твоя задача — помогать клиентам сформулировать техническое задание на разработку ботов. "
-                    "Отвечай на русском языке, дружелюбно и по делу."
-                )
-            }
-        ]
-        await message.answer("🧹 История очищена. Задавайте новый вопрос!")
-        return
-    
-    # Инициализация истории, если её нет
-    if user_id not in user_histories:
-        user_histories[user_id] = [
-            {
-                "role": "system",
-                "content": (
-                    "Ты — ИИ-консультант в проекте 'УГОЛОК СТУДЕНТА'. "
-                    "Твоя задача — помогать клиентам сформулировать техническое задание на разработку ботов. "
-                    "Отвечай на русском языке, дружелюбно и по делу."
-                )
-            }
-        ]
-    
-    # Добавляем сообщение пользователя
-    user_histories[user_id].append({"role": "user", "content": user_message})
-    
-    try:
-        # Отправляем индикатор "печатает"
-        await bot.send_chat_action(message.chat.id, action="typing")
+    if order_id in orders:
+        orders[order_id]["paid"] = True
+        orders[order_id]["total_sum"] = "200 Stars"
+        orders[order_id]["status"] = "paid"
+        save_orders()  # 💾 СОХРАНЯЕМ В ФАЙЛ
         
-        # Запрос к DeepSeek через Cloud.ru
-        assistant_reply = await ask_deepseek(user_histories[user_id])
-        
-        # Сохраняем ответ в историю
-        user_histories[user_id].append({"role": "assistant", "content": assistant_reply})
-        
-        # Обрезаем историю, если она слишком длинная
-        if len(user_histories[user_id]) > 20:
-            system_prompt = user_histories[user_id][0]
-            user_histories[user_id] = [system_prompt] + user_histories[user_id][-10:]
-        
-        # Отправляем ответ
-        await message.answer(assistant_reply, parse_mode="Markdown")
-        
-    except Exception as e:
-        logging.error(f"Ошибка ИИ: {e}")
         await message.answer(
-            f"⚠️ Ошибка при обращении к ИИ: `{str(e)}`\n\n"
-            "Попробуйте переформулировать вопрос или начните новый диалог (/clear).",
+            f"✅ **Оплата получена!**\n\n"
+            f"🆔 Заказ: `{order_id}`\n"
+            "Спасибо! Мы начинаем работу над вашим заказом.",
+            parse_mode="Markdown"
+        )
+        
+        username = f"@{message.from_user.username}" if message.from_user.username else "без юзернейма"
+        
+        await bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=(
+                f"💰 **ОПЛАТА ПОЛУЧЕНА!**\n\n"
+                f"🆔 Заказ: `{order_id}`\n"
+                f"👤 Клиент: {username}\n"
+                f"⭐ Сумма: 200 Stars\n\n"
+                f"✅ Можно приступать к работе!"
+            ),
             parse_mode="Markdown"
         )
 
-# ------------------ ДЕЙСТВИЯ АДМИНОВ ------------------
-@dp.callback_query(F.data.startswith("contact|"))
-async def contact_order(callback: CallbackQuery):
-    data_part = callback.data.split("|")[1]
-    user_id = int(data_part.split("|")[0])
+# ------------------ ИСТОРИЯ ЗАКАЗОВ ------------------
+@dp.callback_query(F.data == "my_orders")
+async def my_orders(callback: CallbackQuery):
+    user_orders = []
+    for oid, data in orders.items():
+        if data["user_id"] == callback.from_user.id:
+            if data.get("paid"):
+                status = "✅ Оплачен"
+            else:
+                status = "⏳ Ожидает оплаты"
+            
+            if data.get("total_sum"):
+                sum_text = data["total_sum"]
+            elif data.get("payment_type") == "stars":
+                sum_text = "200 Stars (ожидает оплаты)"
+            else:
+                sum_text = "На карту (сумма будет позже)"
+            
+            user_orders.append(f"`{oid}` — {status} ({sum_text})")
     
-    await callback.message.answer(
-        f"✏️ Напишите сообщение для клиента (ID: {user_id}):"
+    if user_orders:
+        text = (
+            "📊 **Ваши заказы:**\n\n"
+            + "\n".join(user_orders)
+            + f"\n\n📌 **Всего заказов:** {len(user_orders)}"
+        )
+    else:
+        text = "📊 **У вас пока нет заказов.**\n\nНажмите '🤖 Заказать бота', чтобы оставить заявку."
+    
+    await callback.message.edit_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=main_menu()
     )
-    waiting_for_reply[callback.from_user.id] = user_id
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("archive|"))
-async def archive_order(callback: CallbackQuery):
-    await callback.answer("📦 Заказ в архиве")
+# ------------------ О ПРОЕКТЕ ------------------
+@dp.callback_query(F.data == "about")
+async def about(callback: CallbackQuery):
     await callback.message.edit_text(
-        f"{callback.message.text or callback.message.caption}\n\n📦 **В архиве**",
-        parse_mode="Markdown"
+        "ℹ️ **О проекте**\n\n"
+        "**\"УГОЛОК СТУДЕНТА\"** — сервис по разработке Telegram-ботов.\n\n"
+        "Помогаем автоматизировать бизнес и личные задачи.\n\n"
+        "📩 **По вопросам:** @studcodebot",
+        parse_mode="Markdown",
+        reply_markup=main_menu()
     )
+    await callback.answer()
 
-@dp.callback_query(F.data.startswith("reject_order|"))
-async def reject_order(callback: CallbackQuery):
-    data_part = callback.data.split("|")[1]
-    user_id = int(data_part.split("|")[0])
-    
-    await callback.answer("❌ Заказ отклонён")
-    await callback.message.edit_text(
-        f"{callback.message.text or callback.message.caption}\n\n❌ **Отклонён**",
-        parse_mode="Markdown"
-    )
-    try:
-        await bot.send_message(
-            user_id,
-            "❌ К сожалению, мы не можем взяться за ваш заказ."
-        )
-    except:
-        pass
-
-@dp.message()
-async def handle_admin_reply(message: Message):
-    admin_id = message.from_user.id
-    if admin_id in waiting_for_reply:
-        target_user_id = waiting_for_reply.pop(admin_id)
-        reply_text = message.text
-        try:
-            await bot.send_message(
-                target_user_id,
-                f"✉️ **Сообщение от модерации:**\n\n{reply_text}",
-                parse_mode="Markdown"
-            )
-            await message.answer(f"✅ Отправлено (ID: {target_user_id})")
-        except Exception as e:
-            await message.answer(f"❌ Ошибка: {e}")
-
-# ------------------ ЗАПУСК БОТА ------------------
+# ------------------ ЗАПУСК ------------------
 async def main():
     print("✅ Бот 'УГОЛОК СТУДЕНТА' запущен!")
-    print(f"🤖 Модель: {MODEL_NAME}")
+    print(f"📨 Заказы приходят в: {ADMIN_CHAT_ID}")
+    print(f"📁 Загружено заказов: {len(orders)}")
+    print("⭐ Оплата через Telegram Stars: 200 Stars")
+    print("💳 Оплата на карту: реквизиты в личку")
     print(f"🕐 Часовой пояс: Asia/Irkutsk (Братск)")
-    print(f"👥 Админ-чат: {ADMIN_CHAT_ID}")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
