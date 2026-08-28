@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import aiohttp
 from typing import Dict, Set
 from datetime import datetime
 import pytz
@@ -12,15 +13,13 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
-from evolution_openai import AsyncCloud
-
 # ------------------ КОНФИГУРАЦИЯ ------------------
-BOT_TOKEN = "8992369673:AAH099klTiftB_tgA2pK3aBb1PWvHgSnRcE"
-ADMIN_CHAT_ID = -5205066255
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+KEY_ID = os.getenv("KEY_ID")
+SECRET = os.getenv("SECRET")
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "-1004386994995"))
 
-# ----- НАСТРОЙКИ CLOUD.RU -----
-KEY_ID = "YjNjMDI0Y2QtMGJiNy00NTllLTgxMGYtMjRmZGFkZDRlNDM3"
-SECRET = "510fc61b207f948fe8c5641336aa504a"
+# Настройки Cloud.ru
 BASE_URL = "https://foundation-models.api.cloud.ru/v1"
 MODEL_NAME = "deepseek-ai/DeepSeek-V4-Pro"
 
@@ -30,16 +29,17 @@ BRATSK_TZ = pytz.timezone('Asia/Irkutsk')
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
+# Проверка наличия токенов
+if not BOT_TOKEN:
+    logging.error("BOT_TOKEN не найден в переменных окружения!")
+    exit(1)
+if not KEY_ID or not SECRET:
+    logging.error("KEY_ID или SECRET не найдены в переменных окружения!")
+    exit(1)
+
 # Инициализация бота
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-
-# Инициализация клиента Cloud.ru
-client = AsyncCloud(
-    key_id=KEY_ID,
-    secret=SECRET,
-    base_url=BASE_URL
-)
 
 # ------------------ СОСТОЯНИЯ ДЛЯ FSM ------------------
 class OrderStates(StatesGroup):
@@ -80,6 +80,33 @@ def order_admin_keyboard(user_id: int, username: str = None):
             InlineKeyboardButton(text="❌ Отказать", callback_data=f"reject_order|{data}")
         ]
     ])
+
+# ------------------ ФУНКЦИЯ ЗАПРОСА К CLOUD.RU ------------------
+async def ask_deepseek(messages: list) -> str:
+    """Отправляет запрос к DeepSeek-V4-Pro через Cloud.ru API"""
+    url = f"{BASE_URL}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {SECRET}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": MODEL_NAME,
+        "messages": messages,
+        "max_tokens": 2500,
+        "temperature": 0.5,
+        "presence_penalty": 0,
+        "top_p": 0.95
+    }
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as response:
+            if response.status != 200:
+                error_text = await response.text()
+                logging.error(f"Ошибка Cloud.ru API: {response.status} - {error_text}")
+                raise Exception(f"API ошибка: {response.status}")
+            
+            result = await response.json()
+            return result["choices"][0]["message"]["content"]
 
 # ------------------ КОМАНДА /START ------------------
 @dp.message(Command("start"))
@@ -203,6 +230,7 @@ async def ai_chat_handler(message: Message, state: FSMContext):
     user_id = message.from_user.id
     user_message = message.text
     
+    # Очистка истории
     if user_message.lower() == "/clear":
         user_histories[user_id] = [
             {
@@ -217,6 +245,7 @@ async def ai_chat_handler(message: Message, state: FSMContext):
         await message.answer("🧹 История очищена. Задавайте новый вопрос!")
         return
     
+    # Инициализация истории, если её нет
     if user_id not in user_histories:
         user_histories[user_id] = [
             {
@@ -229,33 +258,32 @@ async def ai_chat_handler(message: Message, state: FSMContext):
             }
         ]
     
+    # Добавляем сообщение пользователя
     user_histories[user_id].append({"role": "user", "content": user_message})
     
     try:
+        # Отправляем индикатор "печатает"
         await bot.send_chat_action(message.chat.id, action="typing")
         
-        response = await client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=user_histories[user_id],
-            max_tokens=2500,
-            temperature=0.5,
-            presence_penalty=0,
-            top_p=0.95
-        )
+        # Запрос к DeepSeek через Cloud.ru
+        assistant_reply = await ask_deepseek(user_histories[user_id])
         
-        assistant_reply = response.choices[0].message.content
+        # Сохраняем ответ в историю
         user_histories[user_id].append({"role": "assistant", "content": assistant_reply})
         
+        # Обрезаем историю, если она слишком длинная
         if len(user_histories[user_id]) > 20:
             system_prompt = user_histories[user_id][0]
             user_histories[user_id] = [system_prompt] + user_histories[user_id][-10:]
         
+        # Отправляем ответ
         await message.answer(assistant_reply, parse_mode="Markdown")
         
     except Exception as e:
         logging.error(f"Ошибка ИИ: {e}")
         await message.answer(
-            f"⚠️ Ошибка: `{str(e)}`\n\nПопробуйте /clear",
+            f"⚠️ Ошибка при обращении к ИИ: `{str(e)}`\n\n"
+            "Попробуйте переформулировать вопрос или начните новый диалог (/clear).",
             parse_mode="Markdown"
         )
 
