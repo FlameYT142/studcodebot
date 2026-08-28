@@ -14,7 +14,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 
 # ------------------ КОНФИГУРАЦИЯ ------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_CHAT_ID = 1302410770  # ВАШ ID
+ADMIN_CHAT_ID = 1302410770
 
 BRATSK_TZ = pytz.timezone('Asia/Irkutsk')
 ORDERS_FILE = "orders.json"
@@ -30,7 +30,6 @@ dp = Dispatcher(storage=MemoryStorage())
 
 # ------------------ РАБОТА С ФАЙЛОМ ------------------
 def load_orders():
-    """Загружает заказы из JSON-файла"""
     if os.path.exists(ORDERS_FILE):
         try:
             with open(ORDERS_FILE, 'r', encoding='utf-8') as f:
@@ -41,14 +40,12 @@ def load_orders():
     return {}
 
 def save_orders():
-    """Сохраняет заказы в JSON-файл"""
     try:
         with open(ORDERS_FILE, 'w', encoding='utf-8') as f:
             json.dump(orders, f, ensure_ascii=False, indent=2)
     except IOError as e:
         logging.error(f"Ошибка сохранения заказов: {e}")
 
-# Загружаем заказы при старте
 orders = load_orders()
 logging.info(f"Загружено {len(orders)} заказов")
 
@@ -61,37 +58,28 @@ class OrderStates(StatesGroup):
 # ------------------ КЛАВИАТУРЫ ------------------
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🤖 Заказать бота", callback_data="new_order")
-        ],
-        [
-            InlineKeyboardButton(text="📊 Мои заказы", callback_data="my_orders"),
-            InlineKeyboardButton(text="ℹ️ О проекте", callback_data="about")
-        ]
+        [InlineKeyboardButton(text="🤖 Заказать бота", callback_data="new_order")],
+        [InlineKeyboardButton(text="📊 Мои заказы", callback_data="my_orders"),
+         InlineKeyboardButton(text="ℹ️ О проекте", callback_data="about")]
     ])
 
 def payment_methods():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="⭐ 200 Stars", callback_data="pay_stars"),
-            InlineKeyboardButton(text="💳 На карту", callback_data="pay_card")
-        ]
+        [InlineKeyboardButton(text="⭐ 200 Stars", callback_data="pay_stars"),
+         InlineKeyboardButton(text="💳 На карту", callback_data="pay_card")]
     ])
 
 def priority_buttons():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🟢 Не срочно", callback_data="priority_low"),
-            InlineKeyboardButton(text="🟡 Нормальный", callback_data="priority_mid"),
-            InlineKeyboardButton(text="🔴 Срочно", callback_data="priority_high")
-        ]
+        [InlineKeyboardButton(text="🟢 Не срочно", callback_data="priority_low"),
+         InlineKeyboardButton(text="🟡 Нормальный", callback_data="priority_mid"),
+         InlineKeyboardButton(text="🔴 Срочно", callback_data="priority_high")]
     ])
 
 # ------------------ /START ------------------
 @dp.message(Command("start"))
 async def start_cmd(message: Message, state: FSMContext):
     await state.clear()
-    
     now_bratsk = datetime.now(BRATSK_TZ)
     time_str = now_bratsk.strftime("%H:%M")
     
@@ -122,7 +110,6 @@ async def new_order(callback: CallbackQuery, state: FSMContext):
 @dp.message(OrderStates.description)
 async def get_description(message: Message, state: FSMContext):
     await state.update_data(description=message.text)
-    
     await message.answer(
         "💳 **Шаг 2 из 3: Выберите способ оплаты**\n\n"
         "⭐ **200 Stars** — оплата внутри Telegram (мгновенно)\n"
@@ -137,12 +124,11 @@ async def get_description(message: Message, state: FSMContext):
 @dp.callback_query(OrderStates.payment, F.data == "pay_stars")
 async def pay_stars(callback: CallbackQuery, state: FSMContext):
     await state.update_data(payment="stars")
-    
     await callback.message.edit_text(
         "⏰ **Шаг 3 из 3: Выберите срочность**\n\n"
         "🟢 **Не срочно** — сделаем в свободное время\n"
         "🟡 **Нормальный** — средний приоритет\n"
-        "🔴 **Срочно** — сделаем в первую очередь(либо после заказа)\n\n"
+        "🔴 **Срочно** — сделаем в первую очередь\n\n"
         "Выберите вариант 👇",
         parse_mode="Markdown",
         reply_markup=priority_buttons()
@@ -153,12 +139,11 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(OrderStates.payment, F.data == "pay_card")
 async def pay_card(callback: CallbackQuery, state: FSMContext):
     await state.update_data(payment="card")
-    
     await callback.message.edit_text(
         "⏰ **Шаг 3 из 3: Выберите срочность**\n\n"
         "🟢 **Не срочно** — сделаем в свободное время\n"
         "🟡 **Нормальный** — средний приоритет\n"
-        "🔴 **Срочно** — сделаем в первую очередь(либо после заказа)\n\n"
+        "🔴 **Срочно** — сделаем в первую очередь\n\n"
         "Выберите вариант 👇",
         parse_mode="Markdown",
         reply_markup=priority_buttons()
@@ -181,10 +166,8 @@ async def get_priority(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     data["priority"] = priority_text
     
-    # Генерируем ID заказа
     order_id = f"ORDER_{callback.from_user.id}_{int(datetime.now().timestamp())}"
     
-    # Определяем способ оплаты
     payment_type = data.get("payment", "—")
     if payment_type == "stars":
         payment_text = "⭐ 200 Stars"
@@ -195,7 +178,6 @@ async def get_priority(callback: CallbackQuery, state: FSMContext):
         status_text = "⏳ Ждёт реквизиты"
         total_sum = "— (будет указана позже)"
     
-    # Сохраняем заказ
     order_data = {
         "user_id": callback.from_user.id,
         "username": callback.from_user.username,
@@ -209,9 +191,8 @@ async def get_priority(callback: CallbackQuery, state: FSMContext):
         "created_at": datetime.now(BRATSK_TZ).strftime("%d.%m.%Y %H:%M")
     }
     orders[order_id] = order_data
-    save_orders()  # 💾 СОХРАНЯЕМ В ФАЙЛ
+    save_orders()
     
-    # ---------- ОТПРАВКА ЗАКАЗА АДМИНУ (ВАМ) ----------
     username = f"@{callback.from_user.username}" if callback.from_user.username else "без юзернейма"
     
     admin_msg = (
@@ -231,7 +212,7 @@ async def get_priority(callback: CallbackQuery, state: FSMContext):
         parse_mode="Markdown"
     )
     
-    # Если выбрана оплата Stars → отправляем счёт
+    # ✅ ИСПРАВЛЕННЫЙ БЛОК ОПЛАТЫ
     if data.get("payment") == "stars":
         await callback.message.edit_text(
             f"✅ **Заказ принят!**\n\n"
@@ -242,21 +223,29 @@ async def get_priority(callback: CallbackQuery, state: FSMContext):
             parse_mode="Markdown"
         )
         
-        await bot.send_invoice(
-    chat_id=callback.from_user.id,
-    title="Предоплата за разработку бота",
-    description=f"Заказ #{order_id}",
-    payload=f"payment_{order_id}",
-    provider_token="",  # <-- ОБЯЗАТЕЛЬНО пустая строка для Stars
-    currency="XTR",     # <-- ОБЯЗАТЕЛЬНО валюта для Stars
-    prices=[LabeledPrice(label="Предоплата", amount=200)],
-    need_name=True,
-    need_phone_number=True,
-    start_parameter="pay",
-    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐ Оплатить 200 Stars", pay=True)]
-    ])
-)
+        try:
+            await bot.send_invoice(
+                chat_id=callback.from_user.id,
+                title="Предоплата за разработку бота",
+                description=f"Заказ #{order_id}\nСрочность: {priority_text}",
+                payload=f"payment_{order_id}",
+                provider_token="",
+                currency="XTR",
+                prices=[LabeledPrice(label="⭐ 200 Stars", amount=200)],  # ← amount=200
+                need_name=True,
+                need_phone_number=True,
+                start_parameter="pay",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⭐ Оплатить 200 Stars", pay=True)]
+                ])
+            )
+        except Exception as e:
+            logging.error(f"Ошибка send_invoice: {e}")
+            await callback.message.answer(
+                f"⚠️ Ошибка при создании счёта: `{str(e)}`\n\n"
+                "Пожалуйста, напишите @studcodebot вручную.",
+                parse_mode="Markdown"
+            )
     else:
         await callback.message.edit_text(
             f"✅ **Заказ принят!**\n\n"
@@ -264,14 +253,14 @@ async def get_priority(callback: CallbackQuery, state: FSMContext):
             f"⏰ **Срочность:** {priority_text}\n\n"
             "💳 **Способ оплаты:** На карту\n\n"
             "Я напишу вам в ближайшее время с реквизитами карты.\n\n"
-            "*Важно проверить, что у вас открыты личные сообщения и я смог до вас дописаться.*",
+            "*Проверьте, что у вас открыты личные сообщения.*",
             parse_mode="Markdown"
         )
     
     await state.clear()
     await callback.answer()
 
-# ------------------ ОБРАБОТКА ПЛАТЕЖЕЙ STARS ------------------
+# ------------------ ОБРАБОТКА ПЛАТЕЖЕЙ ------------------
 @dp.pre_checkout_query()
 async def pre_checkout_query(query: types.PreCheckoutQuery):
     await query.answer(ok=True)
@@ -285,7 +274,7 @@ async def successful_payment(message: Message):
         orders[order_id]["paid"] = True
         orders[order_id]["total_sum"] = "200 Stars"
         orders[order_id]["status"] = "paid"
-        save_orders()  # 💾 СОХРАНЯЕМ В ФАЙЛ
+        save_orders()
         
         await message.answer(
             f"✅ **Оплата получена!**\n\n"
