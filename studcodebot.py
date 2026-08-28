@@ -50,6 +50,15 @@ def save_orders():
 orders = load_orders()
 logging.info(f"Загружено {len(orders)} заказов")
 
+# ------------------ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ------------------
+def get_user_order_count(user_id: int) -> int:
+    """Считает количество заказов пользователя (активных + архивных)"""
+    count = 0
+    for order in orders.values():
+        if order.get("user_id") == user_id:
+            count += 1
+    return count
+
 # ------------------ СОСТОЯНИЯ ------------------
 class OrderStates(StatesGroup):
     description = State()
@@ -63,7 +72,6 @@ class NegotiationStates(StatesGroup):
 
 # ------------------ КЛАВИАТУРЫ ------------------
 def main_menu():
-    """Главное меню бота"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🤖 Заказать бота", callback_data="new_order")
@@ -74,7 +82,7 @@ def main_menu():
         ],
         [
             InlineKeyboardButton(text="ℹ️ О проекте", callback_data="about"),
-            InlineKeyboardButton(text="📩 Связь", callback_data="contact")
+            InlineKeyboardButton(text="📩 Связаться", callback_data="client_contact")
         ]
     ])
 
@@ -121,6 +129,14 @@ def admin_negotiation_keyboard(order_id: str):
         ]
     ])
 
+def archived_order_keyboard(order_id: str):
+    """Кнопки для архивного заказа"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔄 Восстановить", callback_data=f"restore_order|{order_id}")
+        ]
+    ])
+
 # ------------------ /START ------------------
 @dp.message(Command("start"))
 async def start_cmd(message: Message, state: FSMContext):
@@ -141,6 +157,31 @@ async def start_cmd(message: Message, state: FSMContext):
         reply_markup=main_menu()
     )
 
+# ------------------ КЛИЕНТ: СВЯЗАТЬСЯ С АДМИНОМ ------------------
+@dp.callback_query(F.data == "client_contact")
+async def client_contact(callback: CallbackQuery):
+    username = f"@{callback.from_user.username}" if callback.from_user.username else "без юзернейма"
+    
+    await bot.send_message(
+        chat_id=ADMIN_CHAT_ID,
+        text=(
+            f"📩 **Клиент хочет связаться!**\n\n"
+            f"👤 Клиент: {username}\n"
+            f"🆔 ID: `{callback.from_user.id}`\n\n"
+            "Напишите ему ответ через кнопку '📩 Написать клиенту' в заказе."
+        ),
+        parse_mode="Markdown"
+    )
+    
+    await callback.message.edit_text(
+        "✅ **Сообщение отправлено!**\n\n"
+        "Администратор свяжется с вами в ближайшее время.\n"
+        f"📩 Если срочно — напишите {MY_USERNAME}",
+        parse_mode="Markdown",
+        reply_markup=main_menu()
+    )
+    await callback.answer()
+
 # ------------------ О ПРОЕКТЕ ------------------
 @dp.callback_query(F.data == "about")
 async def about(callback: CallbackQuery):
@@ -152,21 +193,7 @@ async def about(callback: CallbackQuery):
         "2. Мы обсуждаем цену (можно поторговаться!)\n"
         "3. Договариваемся и начинаем работу\n\n"
         "📌 *Пример: бюджет 300 ₽ → обсуждаем, приходим к общей цене*\n\n"
-        "📩 **Связь:** @myhzxc",
-        parse_mode="Markdown",
-        reply_markup=main_menu()
-    )
-    await callback.answer()
-
-# ------------------ СВЯЗЬ ------------------
-@dp.callback_query(F.data == "contact")
-async def contact(callback: CallbackQuery):
-    await callback.message.edit_text(
-        "📩 **Связь с администратором**\n\n"
-        "Если у вас есть вопросы или предложения — пишите:\n\n"
-        "👤 **Администратор:** @myhzxc\n"
-        "🕐 **Время работы:** круглосуточно\n\n"
-        "Мы всегда на связи!",
+        f"📩 **Связь:** {MY_USERNAME}",
         parse_mode="Markdown",
         reply_markup=main_menu()
     )
@@ -242,6 +269,9 @@ async def get_priority(callback: CallbackQuery, state: FSMContext):
     
     order_id = f"ORDER_{callback.from_user.id}_{int(datetime.now().timestamp())}"
     
+    # Получаем количество заказов пользователя
+    order_count = get_user_order_count(callback.from_user.id)
+    
     order_data = {
         "user_id": callback.from_user.id,
         "username": callback.from_user.username,
@@ -253,6 +283,7 @@ async def get_priority(callback: CallbackQuery, state: FSMContext):
         "paid": False,
         "final_price": None,
         "comment": None,
+        "order_number": order_count + 1,  # Номер заказа (1, 2, 3...)
         "created_at": datetime.now(BRATSK_TZ).strftime("%d.%m.%Y %H:%M")
     }
     orders[order_id] = order_data
@@ -267,6 +298,7 @@ async def get_priority(callback: CallbackQuery, state: FSMContext):
         f"⏰ **Срочность:** {priority_text}\n\n"
         f"👤 **Заказчик:** {username}\n"
         f"🆔 **ID:** `{callback.from_user.id}`\n"
+        f"🔢 **Заказов от клиента:** {order_count} (всего с этим: {order_count + 1})\n"
         f"🕐 **Время:** {order_data['created_at']}\n\n"
         "Выберите действие:"
     )
@@ -282,7 +314,8 @@ async def get_priority(callback: CallbackQuery, state: FSMContext):
         f"✅ **Заказ принят!**\n\n"
         f"🆔 **Заказ:** `{order_id}`\n"
         f"💰 **Ваш бюджет:** {data.get('budget', '—')} ₽\n"
-        f"⏰ **Срочность:** {priority_text}\n\n"
+        f"⏰ **Срочность:** {priority_text}\n"
+        f"🔢 **Это ваш заказ №{order_count + 1}!**\n\n"
         "⏳ **Ожидайте ответа от администратора.**\n\n"
         "Я свяжусь с вами в ближайшее время.",
         parse_mode="Markdown",
@@ -541,7 +574,7 @@ async def accept_price(callback: CallbackQuery):
         f"🆔 Заказ: `{order_id}`\n"
         f"💰 Итоговая цена: {final_price} ₽\n\n"
         "Я свяжусь с вами для уточнения деталей и начала работы.\n\n"
-        "📩 Если нужна срочная связь: @myhzxc",
+        f"📩 Если нужна срочная связь: {MY_USERNAME}",
         parse_mode="Markdown",
         reply_markup=main_menu()
     )
@@ -643,7 +676,7 @@ async def reject_offer(callback: CallbackQuery):
     
     await callback.message.edit_text(
         f"❌ **Вы отказались от заказа `{order_id}`**\n\n"
-        "Если передумаете, просто напишите мне — @myhzxc",
+        f"Если передумаете, просто напишите мне — {MY_USERNAME}",
         parse_mode="Markdown",
         reply_markup=main_menu()
     )
@@ -696,7 +729,7 @@ async def handle_admin_reply(message: Message):
             await bot.send_message(
                 target_user_id,
                 f"✉️ **Сообщение от администратора:**\n\n{reply_text}\n\n"
-                f"📩 Если нужно — напишите @myhzxc",
+                f"📩 Если нужно — напишите {MY_USERNAME}",
                 parse_mode="Markdown"
             )
             await message.answer(f"✅ Отправлено пользователю")
@@ -731,7 +764,8 @@ async def my_orders(callback: CallbackQuery):
             }.get(admin_status, "⏳ Ожидает решения")
             
             price = data.get("final_price") or data.get("budget", "—")
-            user_orders.append(f"`{oid}` — {status_emoji} {admin_status_text} ({price} ₽)")
+            order_num = data.get("order_number", "?")
+            user_orders.append(f"#{order_num} `{oid}` — {status_emoji} {admin_status_text} ({price} ₽)")
     
     if user_orders:
         text = (
@@ -760,7 +794,8 @@ async def archive_orders(callback: CallbackQuery):
             
             price = data.get("final_price") or data.get("budget", "—")
             archived_at = data.get("archived_at", "—")
-            user_orders.append(f"`{oid}` — {price} ₽ (архивирован {archived_at})")
+            order_num = data.get("order_number", "?")
+            user_orders.append(f"#{order_num} `{oid}` — {price} ₽ (архивирован {archived_at})")
     
     if user_orders:
         text = (
@@ -768,14 +803,124 @@ async def archive_orders(callback: CallbackQuery):
             + "\n".join(user_orders)
             + f"\n\n📌 **Всего в архиве:** {len(user_orders)}"
         )
+        
+        # Показываем кнопку для архива админу (если это админ)
+        if callback.from_user.id == ADMIN_CHAT_ID:
+            await callback.message.edit_text(
+                text,
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔄 Восстановить заказ", callback_data="admin_restore_menu")]
+                ])
+            )
+        else:
+            await callback.message.edit_text(
+                text,
+                parse_mode="Markdown",
+                reply_markup=main_menu()
+            )
     else:
         text = "📦 **Архив пуст.**\n\nЗдесь будут отображаться завершённые заказы."
+        await callback.message.edit_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=main_menu()
+        )
+    await callback.answer()
+
+# ------------------ АДМИН: ВОССТАНОВИТЬ ЗАКАЗ ------------------
+@dp.callback_query(F.data == "admin_restore_menu")
+async def admin_restore_menu(callback: CallbackQuery):
+    """Показывает список архивных заказов для восстановления"""
+    archived_orders = []
+    for oid, data in orders.items():
+        if data.get("admin_status") == "archived":
+            archived_orders.append(oid)
+    
+    if not archived_orders:
+        await callback.message.edit_text(
+            "📦 **Нет архивных заказов для восстановления.**",
+            parse_mode="Markdown",
+            reply_markup=main_menu()
+        )
+        await callback.answer()
+        return
+    
+    # Создаём кнопки для каждого архивного заказа
+    buttons = []
+    for oid in archived_orders[:10]:  # Показываем первые 10
+        data = orders[oid]
+        order_num = data.get("order_number", "?")
+        buttons.append([InlineKeyboardButton(
+            text=f"#{order_num} {oid[:15]}...",
+            callback_data=f"restore_order|{oid}"
+        )])
+    
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="archive_orders")])
     
     await callback.message.edit_text(
-        text,
+        "📦 **Выберите заказ для восстановления:**\n\n"
+        "Заказ будет перемещён из архива в активные.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("restore_order|"))
+async def restore_order(callback: CallbackQuery):
+    """Восстанавливает заказ из архива"""
+    order_id = callback.data.split("|")[1]
+    
+    if order_id not in orders:
+        await callback.answer("❌ Заказ не найден", show_alert=True)
+        return
+    
+    order = orders[order_id]
+    order["admin_status"] = "pending"  # Возвращаем в ожидание
+    order["status"] = "new"
+    order["restored_at"] = datetime.now(BRATSK_TZ).strftime("%d.%m.%Y %H:%M")
+    save_orders()
+    
+    # Уведомляем админа
+    await callback.message.edit_text(
+        f"✅ **Заказ `{order_id}` восстановлен из архива!**\n\n"
+        "Теперь он снова в активных заказах.",
         parse_mode="Markdown",
         reply_markup=main_menu()
     )
+    
+    # Уведомляем клиента
+    await bot.send_message(
+        chat_id=order["user_id"],
+        text=(
+            f"🔄 **Ваш заказ `{order_id}` восстановлен!**\n\n"
+            "Мы снова работаем над вашим проектом.\n"
+            "Ожидайте ответа от администратора."
+        ),
+        parse_mode="Markdown"
+    )
+    
+    # Отправляем заказ админу как новый
+    username = f"@{order.get('username')}" if order.get("username") else "без юзернейма"
+    admin_msg = (
+        f"📦 **ЗАКАЗ ВОССТАНОВЛЕН ИЗ АРХИВА!**\n\n"
+        f"📝 **Описание ТЗ:**\n{order.get('description', '—')}\n\n"
+        f"💰 **Бюджет клиента:** {order.get('budget', '—')} ₽\n"
+        f"⏰ **Срочность:** {order.get('priority', '—')}\n\n"
+        f"👤 **Заказчик:** {username}\n"
+        f"🆔 **ID:** `{order['user_id']}`\n"
+        f"🔢 **Номер заказа:** {order.get('order_number', '?')}\n"
+        f"🕐 **Восстановлен:** {order.get('restored_at', '—')}\n\n"
+        "Выберите действие:"
+    )
+    
+    await bot.send_message(
+        chat_id=ADMIN_CHAT_ID,
+        text=admin_msg,
+        parse_mode="Markdown",
+        reply_markup=admin_order_keyboard(order_id)
+    )
+    
     await callback.answer()
 
 # ------------------ ЗАПУСК ------------------
@@ -785,6 +930,8 @@ async def main():
     print(f"📁 Загружено заказов: {len(orders)}")
     print("💬 Система торгов включена!")
     print("📌 Пример бюджета: 300 ₽")
+    print("🔄 Восстановление из архива активно!")
+    print("🔢 Счётчик заказов включён!")
     print(f"📩 Ваш юзернейм: {MY_USERNAME}")
     print(f"🕐 Часовой пояс: Asia/Irkutsk (Братск)")
     await dp.start_polling(bot)
