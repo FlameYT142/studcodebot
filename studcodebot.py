@@ -82,7 +82,7 @@ def priority_buttons():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🟢 Не срочно", callback_data="priority_low"),
-            InlineKeyboardButton(text="🟡 Норм", callback_data="priority_mid"),
+            InlineKeyboardButton(text="🟡 Нормальный", callback_data="priority_mid"),
             InlineKeyboardButton(text="🔴 Срочно", callback_data="priority_high")
         ]
     ])
@@ -141,8 +141,8 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "⏰ **Шаг 3 из 3: Выберите срочность**\n\n"
         "🟢 **Не срочно** — сделаем в свободное время\n"
-        "🟡 **Норм** — средний приоритет\n"
-        "🔴 **Срочно** — сделаем в первую очередь\n\n"
+        "🟡 **Нормальный** — средний приоритет\n"
+        "🔴 **Срочно** — сделаем в первую очередь(либо после заказа)\n\n"
         "Выберите вариант 👇",
         parse_mode="Markdown",
         reply_markup=priority_buttons()
@@ -157,8 +157,8 @@ async def pay_card(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "⏰ **Шаг 3 из 3: Выберите срочность**\n\n"
         "🟢 **Не срочно** — сделаем в свободное время\n"
-        "🟡 **Норм** — средний приоритет\n"
-        "🔴 **Срочно** — сделаем в первую очередь\n\n"
+        "🟡 **Нормальный** — средний приоритет\n"
+        "🔴 **Срочно** — сделаем в первую очередь(либо после заказа)\n\n"
         "Выберите вариант 👇",
         parse_mode="Markdown",
         reply_markup=priority_buttons()
@@ -169,7 +169,7 @@ async def pay_card(callback: CallbackQuery, state: FSMContext):
 # ------------------ ШАГ 3: СРОЧНОСТЬ ------------------
 priority_names = {
     "priority_low": "🟢 Не срочно",
-    "priority_mid": "🟡 Норм",
+    "priority_mid": "🟡 Нормальный",
     "priority_high": "🔴 Срочно"
 }
 
@@ -243,28 +243,28 @@ async def get_priority(callback: CallbackQuery, state: FSMContext):
         )
         
         await bot.send_invoice(
-            chat_id=callback.from_user.id,
-            title="Предоплата за разработку бота",
-            description=f"Заказ #{order_id}\nСрочность: {priority_text}",
-            payload=f"payment_{order_id}",
-            provider_token="",
-            currency="XTR",
-            prices=[LabeledPrice(label="Предоплата", amount=200)],
-            need_name=True,
-            need_phone_number=True,
-            start_parameter="pay",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⭐ Оплатить 200 Stars", pay=True)]
-            ])
-        )
+    chat_id=callback.from_user.id,
+    title="Предоплата за разработку бота",
+    description=f"Заказ #{order_id}",
+    payload=f"payment_{order_id}",
+    provider_token="",  # <-- ОБЯЗАТЕЛЬНО пустая строка для Stars
+    currency="XTR",     # <-- ОБЯЗАТЕЛЬНО валюта для Stars
+    prices=[LabeledPrice(label="Предоплата", amount=200)],
+    need_name=True,
+    need_phone_number=True,
+    start_parameter="pay",
+    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⭐ Оплатить 200 Stars", pay=True)]
+    ])
+)
     else:
         await callback.message.edit_text(
             f"✅ **Заказ принят!**\n\n"
             f"🆔 **Заказ:** `{order_id}`\n"
             f"⏰ **Срочность:** {priority_text}\n\n"
             "💳 **Способ оплаты:** На карту\n\n"
-            "Я напишу вам в ближайшее время с реквизитами.\n\n"
-            "*Проверьте, что у вас открыты личные сообщения.*",
+            "Я напишу вам в ближайшее время с реквизитами карты.\n\n"
+            "*Важно проверить, что у вас открыты личные сообщения и я смог до вас дописаться.*",
             parse_mode="Markdown"
         )
     
@@ -290,7 +290,7 @@ async def successful_payment(message: Message):
         await message.answer(
             f"✅ **Оплата получена!**\n\n"
             f"🆔 Заказ: `{order_id}`\n"
-            "Спасибо! Мы начинаем работу над вашим заказом.",
+            "Спасибо за оплату! Мы начинаем работу над вашим заказом.",
             parse_mode="Markdown"
         )
         
